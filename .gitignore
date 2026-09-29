@@ -1,0 +1,29 @@
+# Local toolchains
+.tools/
+
+# .NET build output
+**/bin/
+**/obj/
+TestResults/
+artifacts/
+
+# User/IDE files
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Frontend dependencies and output
+node_modules/
+dist/
+
+# Local application data and credentials
+.local-data/
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# OS files
+Thumbs.db
+.DS_Store

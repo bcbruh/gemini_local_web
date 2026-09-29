@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\AgentLocalWeb.Agent.Core\AgentLocalWeb.Agent.Core.csproj" />
+    <ProjectReference Include="..\..\src\AgentLocalWeb.Brain.Abstractions\AgentLocalWeb.Brain.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\AgentLocalWeb.Brain.GeminiWeb\AgentLocalWeb.Brain.GeminiWeb.csproj" />
+    <ProjectReference Include="..\..\src\AgentLocalWeb.Tools\AgentLocalWeb.Tools.csproj" />
+    <ProjectReference Include="..\..\src\AgentLocalWeb.Workspace\AgentLocalWeb.Workspace.csproj" />
+  </ItemGroup>
+</Project>

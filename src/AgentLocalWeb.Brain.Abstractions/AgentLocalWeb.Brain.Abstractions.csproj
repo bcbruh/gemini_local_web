@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>AgentLocalWeb.Brain</RootNamespace>
+    <AssemblyName>AgentLocalWeb.Brain.Abstractions</AssemblyName>
+  </PropertyGroup>
+</Project>

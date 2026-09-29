@@ -1,0 +1,23 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AgentLocalWeb.Agent.Core/AgentLocalWeb.Agent.Core.csproj" />
+    <Project Path="src/AgentLocalWeb.AppHost/AgentLocalWeb.AppHost.csproj" />
+    <Project Path="src/AgentLocalWeb.Brain.Abstractions/AgentLocalWeb.Brain.Abstractions.csproj" />
+    <Project Path="src/AgentLocalWeb.Brain.Fake/AgentLocalWeb.Brain.Fake.csproj" />
+    <Project Path="src/AgentLocalWeb.Brain.GeminiWeb/AgentLocalWeb.Brain.GeminiWeb.csproj" />
+    <Project Path="src/AgentLocalWeb.Persistence/AgentLocalWeb.Persistence.csproj" />
+    <Project Path="src/AgentLocalWeb.Tools/AgentLocalWeb.Tools.csproj" />
+    <Project Path="src/AgentLocalWeb.Workspace/AgentLocalWeb.Workspace.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AgentLocalWeb.Agent.Core.Tests/AgentLocalWeb.Agent.Core.Tests.csproj" />
+    <Project Path="tests/AgentLocalWeb.AppHost.Tests/AgentLocalWeb.AppHost.Tests.csproj" />
+    <Project Path="tests/AgentLocalWeb.Brain.ContractTests/AgentLocalWeb.Brain.ContractTests.csproj" />
+    <Project Path="tests/AgentLocalWeb.Persistence.Tests/AgentLocalWeb.Persistence.Tests.csproj" />
+    <Project Path="tests/AgentLocalWeb.Tools.Tests/AgentLocalWeb.Tools.Tests.csproj" />
+    <Project Path="tests/AgentLocalWeb.Workspace.Tests/AgentLocalWeb.Workspace.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/AgentLocalWeb.GeminiWeb.Spike/AgentLocalWeb.GeminiWeb.Spike.csproj" />
+  </Folder>
+</Solution>
