@@ -4,6 +4,19 @@
 
 Exactly one JSON object is accepted per brain turn. Markdown fences, surrounding prose, duplicate properties and unknown properties are rejected.
 
+The Gemini Web adapter narrowly repairs a browser typography artifact when an object-shaped
+response uses curly characters for some or all JSON delimiters. It first preserves any response
+that is already valid JSON and only uses a repaired candidate when that candidate parses as
+exactly one object. Prose and ambiguous responses are not rewritten, and the repaired envelope
+still passes every strict protocol validation below.
+
+The runtime's `agent-system/v4` prompt includes both exact response schemas on the first
+turn and repeats them after a protocol rejection. Aliases such as `type: "message"`,
+`type: "response"` or a final `content` field are rejected rather than normalized.
+It also requires the brain to stop after one JSON object. The default protocol retry
+budget is zero, so malformed output cannot silently create another Gemini prompt. A
+caller can still opt into a bounded correction retry when that behavior is intentional.
+
 ## Final response
 
 ```json

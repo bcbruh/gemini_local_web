@@ -103,7 +103,15 @@ public sealed class LocalApplicationHttpTests
                 lastEventId: null,
                 testCancellation);
             Assert.Equal(initialSequence + 1, firstEvent.Id);
-            Assert.Equal("brain.connection_changed", firstEvent.Type);
+            Assert.Equal("brain.connection_started", firstEvent.Type);
+
+            var firstConnectionChanged = await ReadOneEventAsync(
+                client,
+                "/api/events?after=0",
+                firstEvent.Id,
+                testCancellation);
+            Assert.Equal(firstEvent.Id + 1, firstConnectionChanged.Id);
+            Assert.Equal("brain.connection_changed", firstConnectionChanged.Type);
 
             using var reconnectTrigger = new HttpRequestMessage(HttpMethod.Post, "/api/brain/connect");
             reconnectTrigger.Headers.Add(LocalAccessSession.CsrfHeaderName, csrfToken);
@@ -113,10 +121,10 @@ public sealed class LocalApplicationHttpTests
             var eventAfterReconnect = await ReadOneEventAsync(
                 client,
                 "/api/events?after=0",
-                firstEvent.Id,
+                firstConnectionChanged.Id,
                 testCancellation);
-            Assert.Equal(firstEvent.Id + 1, eventAfterReconnect.Id);
-            Assert.Equal("brain.connection_changed", eventAfterReconnect.Type);
+            Assert.Equal(firstConnectionChanged.Id + 1, eventAfterReconnect.Id);
+            Assert.Equal("brain.connection_started", eventAfterReconnect.Type);
 
             using var send = new HttpRequestMessage(
                 HttpMethod.Post,
@@ -129,6 +137,7 @@ public sealed class LocalApplicationHttpTests
             Assert.Equal(HttpStatusCode.OK, sent.StatusCode);
             var conversation = await sent.Content.ReadFromJsonAsync<JsonElement>(testCancellation);
             var messages = conversation.GetProperty("messages");
+            var firstConversationId = conversation.GetProperty("id").GetString();
             Assert.Equal(2, messages.GetArrayLength());
             Assert.Contains(
                 "Fake Brain đã nhận",
@@ -141,6 +150,19 @@ public sealed class LocalApplicationHttpTests
             Assert.Equal(
                 "completed",
                 completedStateBody.GetProperty("latestRun").GetProperty("status").GetString());
+
+            using var startNew = new HttpRequestMessage(HttpMethod.Post, "/api/conversation/new");
+            startNew.Headers.Add(LocalAccessSession.CsrfHeaderName, csrfToken);
+            using var startedNew = await client.SendAsync(startNew, testCancellation);
+            Assert.Equal(HttpStatusCode.OK, startedNew.StatusCode);
+            var newConversation = await startedNew.Content.ReadFromJsonAsync<JsonElement>(
+                testCancellation);
+            Assert.NotEqual(firstConversationId, newConversation.GetProperty("id").GetString());
+            Assert.Equal(0, newConversation.GetProperty("messages").GetArrayLength());
+
+            using var newState = await client.GetAsync("/api/state", testCancellation);
+            var newStateBody = await newState.Content.ReadFromJsonAsync<JsonElement>(testCancellation);
+            Assert.Equal(JsonValueKind.Null, newStateBody.GetProperty("latestRun").ValueKind);
         }
         finally
         {
@@ -530,7 +552,10 @@ public sealed class LocalApplicationHttpTests
             using var response = await client.GetAsync("/api/state", cancellationToken);
             var state = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
             var approval = state.GetProperty("pendingApproval");
-            if (approval.ValueKind == JsonValueKind.Object)
+            var latestRun = state.GetProperty("latestRun");
+            if (approval.ValueKind == JsonValueKind.Object &&
+                latestRun.ValueKind == JsonValueKind.Object &&
+                latestRun.GetProperty("status").GetString() == "waiting_for_approval")
             {
                 return (state, approval);
             }

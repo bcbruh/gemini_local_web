@@ -142,7 +142,9 @@ public sealed class GeminiWebBrain : IBrain
                     "Gemini Web returned an empty response.");
             }
 
-            return new BrainResponse.Final(Guid.NewGuid().ToString("N"), response);
+            return new BrainResponse.Final(
+                Guid.NewGuid().ToString("N"),
+                NormalizeProtocolTypography(response));
         }
         catch (GeminiWebSessionException exception)
         {
@@ -216,6 +218,111 @@ public sealed class GeminiWebBrain : IBrain
             exception.Message,
             exception.IsRetryable,
             exception);
+
+    private static string NormalizeProtocolTypography(string response)
+    {
+        var trimmed = response.Trim();
+        if (trimmed.Length < 2 || trimmed[0] != '{' || trimmed[^1] != '}')
+        {
+            return response;
+        }
+
+        if (IsJsonObject(response))
+        {
+            return response;
+        }
+
+        // Gemini Web occasionally typography-substitutes some or all JSON delimiters even
+        // when the model followed the requested envelope. Accept the repaired candidate only
+        // when it becomes exactly one JSON object; prose and ambiguous content remain unchanged.
+        var candidate = response
+            .Replace('\u201c', '"')
+            .Replace('\u201d', '"');
+        if (IsJsonObject(candidate))
+        {
+            return candidate;
+        }
+
+        candidate = EscapeLineBreaksInsideStrings(candidate);
+        return IsJsonObject(candidate) ? candidate : response;
+    }
+
+    private static string EscapeLineBreaksInsideStrings(string value)
+    {
+        var result = new System.Text.StringBuilder(value.Length);
+        var insideString = false;
+        var escaped = false;
+        for (var index = 0; index < value.Length; index++)
+        {
+            var character = value[index];
+            if (!insideString)
+            {
+                result.Append(character);
+                if (character == '"')
+                {
+                    insideString = true;
+                }
+
+                continue;
+            }
+
+            if (escaped)
+            {
+                result.Append(character);
+                escaped = false;
+                continue;
+            }
+
+            if (character == '\\')
+            {
+                result.Append(character);
+                escaped = true;
+                continue;
+            }
+
+            if (character == '"')
+            {
+                result.Append(character);
+                insideString = false;
+                continue;
+            }
+
+            if (character == '\r' || character == '\n')
+            {
+                result.Append("\\n");
+                if (character == '\r' && index + 1 < value.Length && value[index + 1] == '\n')
+                {
+                    index++;
+                }
+
+                continue;
+            }
+
+            result.Append(character);
+        }
+
+        return result.ToString();
+    }
+
+    private static bool IsJsonObject(string value)
+    {
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(
+                value,
+                new System.Text.Json.JsonDocumentOptions
+                {
+                    AllowTrailingCommas = false,
+                    CommentHandling = System.Text.Json.JsonCommentHandling.Disallow,
+                    MaxDepth = 16
+                });
+            return document.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return false;
+        }
+    }
 
     private BrainStatus Status(BrainConnectionState state, string message) =>
         new(Provider, state, message);

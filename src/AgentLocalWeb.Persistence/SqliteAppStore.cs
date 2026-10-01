@@ -266,6 +266,56 @@ public sealed class SqliteAppStore : IAsyncDisposable
         }
     }
 
+    public async Task<string> StartNewActiveConversationAsync(
+        CancellationToken cancellationToken = default)
+    {
+        EnsureReady();
+        await _writer.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken)
+                .ConfigureAwait(false);
+            var conversationId = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
+            var now = _timeProvider.GetUtcNow();
+            await using (var create = connection.CreateCommand())
+            {
+                create.Transaction = (SqliteTransaction)transaction;
+                create.CommandText = """
+                    INSERT INTO conversations(id, title, created_utc, updated_utc)
+                    VALUES ($id, 'Main conversation', $createdUtc, $updatedUtc);
+
+                    UPDATE app_state
+                    SET active_conversation_id = $id
+                    WHERE id = 1;
+                    """;
+                create.Parameters.AddWithValue("$id", conversationId);
+                create.Parameters.AddWithValue(
+                    "$createdUtc",
+                    now.ToString("O", CultureInfo.InvariantCulture));
+                create.Parameters.AddWithValue(
+                    "$updatedUtc",
+                    now.ToString("O", CultureInfo.InvariantCulture));
+                await create.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            var appEvent = await InsertEventAsync(
+                connection,
+                (SqliteTransaction)transaction,
+                "conversation.created",
+                JsonSerializer.Serialize(new { ConversationId = conversationId }),
+                null,
+                cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            Publish(appEvent.Sequence);
+            return conversationId;
+        }
+        finally
+        {
+            _writer.Release();
+        }
+    }
+
     public async Task<PersistedConversation?> GetActiveConversationAsync(
         CancellationToken cancellationToken = default)
     {
@@ -998,6 +1048,29 @@ public sealed class SqliteAppStore : IAsyncDisposable
             ORDER BY created_utc DESC, rowid DESC
             LIMIT 1;
             """;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? MapRun(reader)
+            : null;
+    }
+
+    public async Task<PersistedRun?> GetLatestRunForConversationAsync(
+        string conversationId,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateIdentifier(conversationId, nameof(conversationId));
+        EnsureReady();
+        await using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, conversation_id, status, protocol_version, prompt_version,
+                   created_utc, updated_utc, completed_utc, error_category, cancel_requested
+            FROM runs
+            WHERE conversation_id = $conversationId
+            ORDER BY created_utc DESC, rowid DESC
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$conversationId", conversationId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
             ? MapRun(reader)

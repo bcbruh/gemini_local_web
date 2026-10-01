@@ -17,7 +17,18 @@ if (!args.Contains("--no-browser", StringComparer.OrdinalIgnoreCase))
 {
     try
     {
-        _ = Process.Start(new ProcessStartInfo(startUri) { UseShellExecute = true });
+        var chromeRequested = args.Contains("--browser=chrome", StringComparer.OrdinalIgnoreCase);
+        var chromePath = chromeRequested ? FindChromeExecutable() : null;
+        if (chromePath is null)
+        {
+            _ = Process.Start(new ProcessStartInfo(startUri) { UseShellExecute = true });
+        }
+        else
+        {
+            var startInfo = new ProcessStartInfo(chromePath) { UseShellExecute = false };
+            startInfo.ArgumentList.Add(startUri);
+            _ = Process.Start(startInfo);
+        }
     }
     catch (Exception exception) when (
         exception is InvalidOperationException or System.ComponentModel.Win32Exception)
@@ -28,3 +39,20 @@ if (!args.Contains("--no-browser", StringComparer.OrdinalIgnoreCase))
 
 app.Logger.LogInformation("AgentLocalWeb is listening on {Address}", address);
 await app.WaitForShutdownAsync().ConfigureAwait(false);
+
+static string? FindChromeExecutable()
+{
+    var candidates = new[]
+    {
+        Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            "Google", "Chrome", "Application", "chrome.exe"),
+        Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+            "Google", "Chrome", "Application", "chrome.exe"),
+        Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Google", "Chrome", "Application", "chrome.exe")
+    };
+    return candidates.FirstOrDefault(File.Exists);
+}

@@ -2,9 +2,13 @@ using System.Text.Json;
 
 namespace AgentLocalWeb.Brain.GeminiWeb;
 
-internal sealed class GeminiPageClient(CdpClient client, GeminiWebOptions options)
+internal sealed class GeminiPageClient(
+    CdpClient client,
+    GeminiWebOptions options,
+    Action<GeminiPageFailureDiagnostic>? reportFailure = null)
 {
     private const int StablePollsRequired = 4;
+    private GeminiPageStage _stage;
 
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
@@ -21,8 +25,35 @@ internal sealed class GeminiPageClient(CdpClient client, GeminiWebOptions option
         string prompt,
         CancellationToken cancellationToken)
     {
+        try
+        {
+            return await SendPromptCoreAsync(prompt, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (
+            exception is GeminiWebSessionException or KeyNotFoundException or InvalidOperationException)
+        {
+            var diagnostic = new GeminiPageFailureDiagnostic(
+                _stage, client.LastCommand, client.LastErrorCode, client.LastEvaluationException);
+            if (reportFailure is not null)
+            {
+                reportFailure(diagnostic);
+            }
+            else
+            {
+                Console.Error.WriteLine(diagnostic.ToLogLine());
+            }
+
+            throw;
+        }
+    }
+
+    private async Task<string> SendPromptCoreAsync(
+        string prompt,
+        CancellationToken cancellationToken)
+    {
         ArgumentException.ThrowIfNullOrWhiteSpace(prompt);
 
+        _stage = GeminiPageStage.Composer;
         var textboxNodeId = await FindPromptBackendNodeIdAsync(cancellationToken)
             .ConfigureAwait(false);
         if (textboxNodeId is null)
@@ -32,17 +63,22 @@ internal sealed class GeminiPageClient(CdpClient client, GeminiWebOptions option
                 "The Gemini prompt is unavailable. Sign in again and reconnect.");
         }
 
+        _stage = GeminiPageStage.WaitIdle;
         await WaitForPageIdleAsync(cancellationToken).ConfigureAwait(false);
         var baselineMarker = Guid.NewGuid().ToString("N");
+        _stage = GeminiPageStage.Baseline;
         await MarkExistingResponsesAsync(baselineMarker, cancellationToken).ConfigureAwait(false);
+        _stage = GeminiPageStage.FocusComposer;
         await client.SendCommandAsync("Page.bringToFront", null, cancellationToken)
             .ConfigureAwait(false);
         await client.SendCommandAsync(
             "DOM.focus",
             new { backendNodeId = textboxNodeId.Value },
             cancellationToken).ConfigureAwait(false);
+        _stage = GeminiPageStage.Typing;
         await SelectPromptTextAsync(cancellationToken).ConfigureAwait(false);
         await SetPromptTextAsync(prompt, cancellationToken).ConfigureAwait(false);
+        _stage = GeminiPageStage.VerifyText;
         if (!await PromptMatchesAsync(prompt, cancellationToken).ConfigureAwait(false))
         {
             throw new GeminiWebSessionException(
@@ -50,11 +86,15 @@ internal sealed class GeminiPageClient(CdpClient client, GeminiWebOptions option
                 "The Gemini composer did not contain the requested prompt after typing.");
         }
 
-        if (!await ClickSendButtonAsync(baselineMarker, cancellationToken).ConfigureAwait(false))
+        _stage = GeminiPageStage.PressEnterSubmit;
+        await PressEnterAsync(cancellationToken).ConfigureAwait(false);
+        _stage = GeminiPageStage.ConfirmSubmission;
+        if (!await WaitForSubmissionAsync(baselineMarker, cancellationToken).ConfigureAwait(false) &&
+            !await ClickSendButtonAsync(baselineMarker, cancellationToken).ConfigureAwait(false))
         {
             throw new GeminiWebSessionException(
                 GeminiWebFailureKind.Compatibility,
-                "Could not locate an enabled Gemini Send button near the composer.");
+                "Could not submit the Gemini prompt with Enter or an enabled Send button.");
         }
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -66,12 +106,16 @@ internal sealed class GeminiPageClient(CdpClient client, GeminiWebOptions option
         {
             while (true)
             {
+                _stage = GeminiPageStage.ReadResponse;
                 var current = await ReadNewResponsesAsync(baselineMarker, timeout.Token)
                     .ConfigureAwait(false);
                 var response = current.LastOrDefault();
+                _stage = GeminiPageStage.GenerationStatus;
                 var generationInProgress = await IsGenerationInProgressAsync(timeout.Token)
                     .ConfigureAwait(false);
-                if (!generationInProgress && !string.IsNullOrWhiteSpace(response))
+                if (!generationInProgress &&
+                    !string.IsNullOrWhiteSpace(response) &&
+                    IsCompleteResponseCandidate(response))
                 {
                     if (string.Equals(response, lastText, StringComparison.Ordinal))
                     {
@@ -88,12 +132,17 @@ internal sealed class GeminiPageClient(CdpClient client, GeminiWebOptions option
                         return response;
                     }
                 }
+                else
+                {
+                    stablePolls = 0;
+                }
 
                 await Task.Delay(options.PollInterval, timeout.Token).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
         {
+            _stage = GeminiPageStage.TimeoutDiagnostics;
             var diagnostics = await ReadDiagnosticsAsync(baselineMarker, cancellationToken)
                 .ConfigureAwait(false);
             await TryStopGenerationAsync(cancellationToken).ConfigureAwait(false);
@@ -155,6 +204,13 @@ internal sealed class GeminiPageClient(CdpClient client, GeminiWebOptions option
                 isRetryable: true,
                 exception);
         }
+    }
+
+    internal static bool IsCompleteResponseCandidate(string response)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+        var trimmed = response.Trim();
+        return trimmed.Length > 0 && (trimmed[0] != '{' || trimmed[^1] == '}');
     }
 
     private async Task<int> ReadResponseNodeCountAsync(CancellationToken cancellationToken)
@@ -236,15 +292,36 @@ internal sealed class GeminiPageClient(CdpClient client, GeminiWebOptions option
                 .replace(/[\u200b\ufeff]/g, '')
                 .normalize('NFC');
               const normalizedExpected = normalize(expected);
-              return candidates.some(candidate =>
-                ('value' in candidate
+              // Quill represents each input line as a paragraph. innerText adds
+              // visual paragraph separators; textContent omits them entirely.
+              // Read this observed structure without discarding meaningful blank lines.
+              const paragraphText = candidate => {
+                const paragraphs = Array.from(candidate.childNodes);
+                if (!candidate.classList.contains('ql-editor') || !paragraphs.length ||
+                    !paragraphs.every(node => node.nodeType === Node.ELEMENT_NODE &&
+                      node.nodeName === 'P') || candidate.querySelector('p p, p div')) {
+                  return undefined;
+                }
+                const inlineText = node => node.nodeType === Node.TEXT_NODE
+                  ? node.nodeValue
+                  : node.nodeName === 'BR' ? '\n'
+                  : Array.from(node.childNodes).map(inlineText).join('');
+                return paragraphs.map(paragraph =>
+                  paragraph.childNodes.length === 1 && paragraph.firstChild.nodeName === 'BR'
+                    ? '' : inlineText(paragraph)).join('\n');
+              };
+              return candidates.some(candidate => {
+                const paragraphs = paragraphText(candidate);
+                const texts = 'value' in candidate
                   ? [candidate.value]
-                  : [candidate.innerText, candidate.textContent])
-                  .some(text => {
-                    if (typeof text !== 'string') return false;
-                    const actual = normalize(text);
-                    return actual === normalizedExpected || actual === `${normalizedExpected}\n`;
-                  }));
+                  : paragraphs !== undefined ? [paragraphs]
+                  : [candidate.innerText, candidate.textContent];
+                return texts.some(text => {
+                  if (typeof text !== 'string') return false;
+                  const actual = normalize(text);
+                  return actual === normalizedExpected || actual === `${normalizedExpected}\n`;
+                });
+              });
             })()
             """;
         var evaluation = await client.SendCommandAsync(
@@ -261,8 +338,10 @@ internal sealed class GeminiPageClient(CdpClient client, GeminiWebOptions option
         CancellationToken cancellationToken)
     {
         var marker = JsonSerializer.Serialize(baselineMarker);
+        var attemptedSubmission = false;
         for (var attempt = 0; attempt < 20; attempt++)
         {
+            _stage = GeminiPageStage.FindSend;
             var expression = $$"""
                 (() => {
                   const attemptMarker = {{marker}};
@@ -385,35 +464,30 @@ internal sealed class GeminiPageClient(CdpClient client, GeminiWebOptions option
                 result.TryGetProperty("objectId", out var objectIdElement) &&
                 !string.IsNullOrWhiteSpace(objectIdElement.GetString()))
             {
+                _stage = GeminiPageStage.LocateSendNode;
                 var description = await client.SendCommandAsync(
                     "DOM.describeNode",
                     new { objectId = objectIdElement.GetString() },
                     cancellationToken).ConfigureAwait(false);
                 var backendNodeId = description.GetProperty("node")
                     .GetProperty("backendNodeId").GetInt32();
+                _stage = GeminiPageStage.ClickSubmit;
+                attemptedSubmission = true;
                 await ClickBackendNodeAsync(backendNodeId, cancellationToken).ConfigureAwait(false);
+                _stage = GeminiPageStage.ConfirmSubmission;
                 if (await WaitForSubmissionAsync(baselineMarker, cancellationToken)
                         .ConfigureAwait(false))
                 {
                     return true;
                 }
 
-                await client.SendCommandAsync(
-                    "DOM.focus",
-                    new { backendNodeId },
-                    cancellationToken).ConfigureAwait(false);
-                await PressSpaceAsync(cancellationToken).ConfigureAwait(false);
-                if (await WaitForSubmissionAsync(baselineMarker, cancellationToken)
-                        .ConfigureAwait(false))
-                {
-                    return true;
-                }
             }
 
             await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken)
                 .ConfigureAwait(false);
         }
 
+        _stage = attemptedSubmission ? GeminiPageStage.ConfirmSubmission : GeminiPageStage.FindSend;
         return false;
     }
 
@@ -527,17 +601,17 @@ internal sealed class GeminiPageClient(CdpClient client, GeminiWebOptions option
             cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task PressSpaceAsync(CancellationToken cancellationToken)
+    private async Task PressEnterAsync(CancellationToken cancellationToken)
     {
         await client.SendCommandAsync(
             "Input.dispatchKeyEvent",
             new
             {
                 type = "rawKeyDown",
-                key = " ",
-                code = "Space",
-                windowsVirtualKeyCode = 32,
-                nativeVirtualKeyCode = 32
+                key = "Enter",
+                code = "Enter",
+                windowsVirtualKeyCode = 13,
+                nativeVirtualKeyCode = 13
             },
             cancellationToken).ConfigureAwait(false);
         await client.SendCommandAsync(
@@ -545,10 +619,10 @@ internal sealed class GeminiPageClient(CdpClient client, GeminiWebOptions option
             new
             {
                 type = "keyUp",
-                key = " ",
-                code = "Space",
-                windowsVirtualKeyCode = 32,
-                nativeVirtualKeyCode = 32
+                key = "Enter",
+                code = "Enter",
+                windowsVirtualKeyCode = 13,
+                nativeVirtualKeyCode = 13
             },
             cancellationToken).ConfigureAwait(false);
     }
@@ -726,7 +800,7 @@ internal sealed class GeminiPageClient(CdpClient client, GeminiWebOptions option
               for (const selector of selectors) {
                 const texts = Array.from(document.querySelectorAll(selector))
                   .filter(element => element.getAttribute('data-agent-local-web-baseline') !== marker)
-                  .map(element => (element.innerText || '').trim())
+                  .map(element => (element.textContent || element.innerText || '').trim())
                   .filter(text => text.length > 0);
                 if (texts.length > 0) return texts;
               }

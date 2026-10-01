@@ -140,7 +140,11 @@ internal static class LocalApplication
         api.MapGet("/state", async (IBrain brain, CancellationToken requestCancellation) =>
         {
             var appState = await store.GetStateAsync(requestCancellation).ConfigureAwait(false);
-            var latestRun = await store.GetLatestRunAsync(requestCancellation).ConfigureAwait(false);
+            var latestRun = appState.ActiveConversationId is null
+                ? null
+                : await store.GetLatestRunForConversationAsync(
+                    appState.ActiveConversationId,
+                    requestCancellation).ConfigureAwait(false);
             var latestToolCalls = latestRun is null
                 ? []
                 : await store.ReadToolCallsForRunAsync(latestRun.Id, requestCancellation)
@@ -168,6 +172,18 @@ internal static class LocalApplication
         api.MapGet("/conversation", async (CancellationToken requestCancellation) =>
             Results.Ok(await conversationService.GetCurrentAsync(requestCancellation)
                 .ConfigureAwait(false)));
+        api.MapPost("/conversation/new", async (CancellationToken requestCancellation) =>
+        {
+            try
+            {
+                return Results.Ok(await conversationService.StartNewAsync(requestCancellation)
+                    .ConfigureAwait(false));
+            }
+            catch (InvalidOperationException exception)
+            {
+                return Results.Conflict(new { error = exception.Message });
+            }
+        });
         api.MapPost("/conversation/messages", async (
             SendMessageRequest request,
             CancellationToken requestCancellation) =>
@@ -274,14 +290,35 @@ internal static class LocalApplication
             IBrain brain,
             CancellationToken requestCancellation) =>
         {
-            var status = await brain.ConnectAsync(
-                new BrainConnectionRequest(Interactive: false),
-                requestCancellation).ConfigureAwait(false);
             await store.AppendEventAsync(
-                "brain.connection_changed",
-                JsonSerializer.Serialize(new { status.Provider, status.State }),
+                "brain.connection_started",
+                JsonSerializer.Serialize(new { brain.Provider }),
                 cancellationToken: requestCancellation).ConfigureAwait(false);
-            return Results.Ok(new { brain = status });
+            try
+            {
+                var status = await brain.ConnectAsync(
+                    new BrainConnectionRequest(Interactive: false),
+                    requestCancellation).ConfigureAwait(false);
+                await store.AppendEventAsync(
+                    "brain.connection_changed",
+                    JsonSerializer.Serialize(new { status.Provider, status.State }),
+                    cancellationToken: requestCancellation).ConfigureAwait(false);
+                return Results.Ok(new { brain = status });
+            }
+            catch (BrainException exception)
+            {
+                await store.AppendEventAsync(
+                    "brain.connection_failed",
+                    JsonSerializer.Serialize(new
+                    {
+                        brain.Provider,
+                        Code = exception.Code.ToString()
+                    }),
+                    cancellationToken: requestCancellation).ConfigureAwait(false);
+                return Results.Json(
+                    new { error = exception.Message, code = exception.Code },
+                    statusCode: StatusCodes.Status409Conflict);
+            }
         });
         api.MapPost("/workspace/pick", async (
             IWorkspacePicker picker,

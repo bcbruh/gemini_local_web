@@ -8,7 +8,7 @@ public sealed record AgentRunRequest(
 
 public sealed record AgentRunOptions(
     int MaximumToolTurns = 8,
-    int MaximumProtocolRetries = 2,
+    int MaximumProtocolRetries = 0,
     TimeSpan? Duration = null,
     int MaximumObservationBytes = 128 * 1024,
     int MaximumContextBytes = 512 * 1024,

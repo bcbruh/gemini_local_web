@@ -39,6 +39,10 @@ export class LocalApi {
     return this.request('/api/conversation');
   }
 
+  startNewConversation(): Promise<Conversation> {
+    return this.request('/api/conversation/new', { method: 'POST' });
+  }
+
   connectBrain(): Promise<BrainResponse> {
     return this.request('/api/brain/connect', { method: 'POST' });
   }

@@ -6,7 +6,7 @@ The product requirements are in [`decribe.md`](./decribe.md), and the staged imp
 
 ## Development status
 
-The repository has a validated Iteration 1 production adapter, a completed Iteration 2 local app shell and an in-progress Iteration 3 read-only agent loop.
+The repository has a validated production Gemini adapter, a completed local app shell and read-only agent loop, and a completed offline safe-edit/approval slice. The production adapter has also passed one live prompt-v4 `read_file` tool loop; command execution and V1 hardening remain future work.
 
 Implemented:
 
@@ -21,11 +21,14 @@ Implemented:
 - Versioned SQLite app state/event store and resumable authenticated SSE stream.
 - React/TypeScript frontend with restored Fake Brain conversation and realtime activity.
 - Real-loopback HTTP integration coverage for bootstrap, cookie/CSRF defenses and resumable SSE.
-- Strict `local-agent/v1` parser and bounded run state machine with retry, duplicate-call and cancellation controls.
+- Strict `local-agent/v1` parser and bounded run state machine with opt-in protocol retry, duplicate-call and cancellation controls.
 - Sandboxed read-only workspace tools for list/read/file search/text search with junction checks and content limits.
 - SQLite-backed run lifecycle with crash recovery, correlated SSE transitions and durable cancellation state.
 - End-to-end HTTP agent loop with workspace tools, typed failures and an active-run cancel endpoint.
 - Realtime UI run status/activity with cancellation; production Gemini selection through `--brain=gemini`.
+- Structured patch preparation, hash-bound approval, stale-file protection, staged multi-file apply and compensating rollback.
+- Three permission modes and an authenticated diff review/apply/reject flow.
+- An explicit new-session boundary that keeps old history local but excludes it from later Brain context.
 
 ## Local build
 

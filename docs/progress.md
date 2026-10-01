@@ -2,7 +2,14 @@
 
 ## Iteration 1 — Gemini Web feasibility and production adapter
 
-Last updated: 2026-09-29
+Last updated: 2026-09-30
+
+Manual use on 2026-09-30 now passes ordinary first and follow-up messages after compatibility
+repairs for prompt submission, streamed-response completion, rendered response extraction and
+stale CDP reconnect. Long-turn latency remains open. A separate context-efficiency issue is now
+confirmed: every Brain call sends a rebuilt bounded snapshot while the same Gemini Web chat also
+retains all earlier snapshots, duplicating history on the remote side. Design analysis is recorded
+below; no context-transport change or further live prompt was made after quota exhaustion.
 
 | Check | Status | Evidence / next action |
 |---|---|---|
@@ -45,7 +52,7 @@ Iteration 2 is complete. Iteration 3 next introduces the run state machine, prot
 | Slice | Status | Evidence / next action |
 |---|---|---|
 | Protocol V1 parser | Passed (unit) | Exact JSON envelopes only; rejects prose, duplicate/unknown fields, unsupported protocol/type/tool and oversized input |
-| Run state machine | Passed (unit) | Valid transitions, terminal states, protocol retry budget, tool-turn budget, duplicate request IDs and cancellation are enforced |
+| Run state machine | Passed (unit) | Valid transitions, terminal states, opt-in protocol retry budget, tool-turn budget, duplicate request IDs and cancellation are enforced; production defaults to no automatic protocol retry |
 | Workspace boundary | Passed (Windows integration) | Rejects traversal, absolute/UNC/device/ADS paths and outside junctions; opened file handles are checked against the final physical root |
 | Read-only workspace primitives | Passed (unit + filesystem integration) | Bounded list/read/search, line ranges, SHA-256 snapshot metadata, ignore rules and binary/large/secret blocking |
 | Typed read-only tools | Passed (unit) | `list_directory`, `read_file`, `search_files` and `search_text` use strict argument schemas and typed bounded results |
@@ -57,7 +64,7 @@ Iteration 2 is complete. Iteration 3 next introduces the run state machine, prot
 | Context budgeting | Passed (unit) | Requests are capped at 512 KiB, retain the newest bounded conversation history, exclude persisted system-role content and fail before contacting the Brain when the current turn cannot fit |
 | Typed error mapping and UX | Passed (unit + real Kestrel + component) | Brain failures map to stable run errors and persisted categories; private adapter diagnostics are not returned, and the UI renders actionable Vietnamese guidance |
 | Gemini provider selection | Implemented | `--brain=gemini` selects the production adapter; Fake Brain remains the deterministic default for offline development |
-| Gemini read-only E2E | In progress | After a later Gemini UI compatibility failure, composer selection and Send discovery were hardened offline: visible composer variants, normalized rich-text verification, localized/semantic/icon/submit controls, a guarded geometric fallback and retrying alternate candidates. No live request was sent; user validation of a clean nonce and full `Gemini → read_file → observation → final` remains pending; see `docs/handoff-2026-09-29.md`. |
+| Gemini read-only E2E | Passed (live prompt v4) | The production adapter completed `Gemini → read_file → observation → final` against an isolated temporary workspace. The final message contained the exact token read from `proof.txt`; the harness exited successfully and removed the workspace. |
 
 Current automated result: 119 tests pass: 117 backend tests across Brain, Agent Core, Tools, AppHost, Workspace and Persistence, plus 2 React component tests. The production frontend build also passes.
 
@@ -72,7 +79,7 @@ Current automated result: 119 tests pass: 117 backend tests across Brain, Agent 
 | Safe apply and stale protection | Passed (filesystem + real HTTP) | All files stage before replacement, backups support compensating batch rollback, physical targets and hashes are rechecked, and stale input prevents every write |
 | Permission modes | Passed (unit) | `read_only` denies patch preparation, `ask_before_changes` pauses for approval, and `auto_edit_workspace` still runs all hard validation before apply |
 | Fake Brain edit E2E | Passed (real Kestrel + filesystem) | `prepare_patch → diff → waiting approval → wrong hash rejected → exact approval → apply → final` completes and changes only the selected workspace file |
-| Gemini edit E2E | Not run | Keep offline until the existing Gemini response-latency issue is revisited; no live Gemini request was needed for this slice |
+| Gemini edit E2E | Not run | Read-only prompt v4 now passes live, but no live edit request has been authorized or needed for this slice |
 
 Current automated result after the safe-edit slice: 129 checks pass: 126 backend tests
 across Brain, Agent Core, Tools, AppHost, Workspace and Persistence, plus 3 React component
@@ -87,13 +94,52 @@ tests. The production frontend build also passes.
 | Simplified controls | Implemented | Brain, workspace and permission controls live in a compact sidebar; run/tool/event activity remains visible in its own bounded scroll area |
 | Workspace picker foreground ownership | Implemented (manual smoke pending) | The Windows picker captures the foreground browser handle and opens as its owned modal dialog instead of being able to hide behind Chrome |
 | Independent pending states | Passed (component) | Waiting for the native workspace picker disables only its own button; Brain and chat controls remain usable |
+| Explicit context/session boundary | Passed (persistence + agent + HTTP + component) | **Phiên mới** atomically activates an empty conversation while retaining old local history. The next Brain request excludes every message from the previous session; the action is blocked while a run is active. |
+| Slow-connect state and measurement | Passed (HTTP + component) | The UI switches from `Disconnected` to `Connecting` before the long request returns. Durable content-free `brain.connection_started` and terminal connection events provide timestamps for measuring startup without logging chat or credentials. |
 | Background Chrome mode | Planned / documented | ADR-002 selects adapter-owned Chrome running hidden after initial login, with an explicit reveal action; implementation has not started |
-| Latest Gemini compatibility retest | Blocked for current session | User retest still returned `brain.compatibility` after offline Send/composer hardening; exact live DOM mismatch is not yet identified |
+| Latest Gemini compatibility retest | Passed through full read-only agent loop | Prompt v4 completed a production `read_file` tool request, correlated observation and final response in one live harness run. Automatic protocol correction remains disabled by default, so malformed output cannot silently create another visible Gemini prompt. |
+| Manual multi-turn Gemini compatibility | Partial / usable | User confirmed the first message and later follow-up flow can complete. Repairs now prefer Enter submission, avoid stale send-button nodes, wait for a closing JSON object, read response `textContent`, narrowly normalize browser typography/rendered line breaks only when the result parses as one object, and discard a broken CDP transport on reconnect. Repeated reliability still needs a quota-restored soak. |
+| Remote context growth | Design pending | Local context is bounded to 512 KiB and the newest 40 persisted messages, but each call currently resends that snapshot into one persistent Gemini Web chat. The remote chat therefore retains duplicate copies. Do not run more live tests until quota is restored; evaluate snapshot-once plus delta turns and bounded remote-chat rotation before implementation. |
 
 Current automated result: 130 checks pass: 126 backend tests plus 4 React component tests.
 Release build succeeds with zero warnings and zero errors. A manual picker smoke remains after
 restarting the already-running AppHost so it loads the new backend assembly.
 
-Work paused at the user's request because the current usage quota was exhausted. Resume with
-live DOM/stage diagnosis of the compatibility failure, not another speculative selector change;
-background Chrome mode is the next UX change after the adapter can submit reliably.
+Latest checkpoint: 151 offline checks pass (139 backend, 6 React, 6 DOM regressions), and
+the frontend production build passes. A newly authorized live prompt-v4 run completed the
+full read-only agent tool loop successfully. The earlier duplicate visible prompt was an
+automatic protocol correction, not a duplicate UI submission; prompt v4 keeps correction
+disabled by default. An explicit new-session boundary now prevents unrelated older history
+from entering later requests. Slow connection now displays `Connecting` and emits bounded timing
+events; repeated live measurements and long-turn latency analysis remain open. Gemini edit E2E
+and live expiry/revocation are also pending. Background Chrome is still planned.
+
+Post-checkpoint targeted validation after the 2026-09-30 manual compatibility fixes: all 34
+Gemini Brain contract tests and 7 Gemini DOM regressions pass, and `dotnet format
+--verify-no-changes` passes. The last complete solution-wide checkpoint remains the 151-check
+run above; no additional live Gemini request should be made until the user's quota is restored.
+
+## Context transport analysis — implementation deferred
+
+Current behavior is safe but wasteful. `AgentContextBuilder` rebuilds each Brain request from the
+system prompt, up to the newest 40 user/assistant messages, the current user message and the
+current run's tool exchanges, capped at 512 KiB. `GeminiWebPromptFormatter` serializes that whole
+snapshot on every Brain call. Because `ChromeGeminiWebSession` keeps using the same Gemini Web
+conversation, Gemini also retains every older full snapshot. This duplicates context, increases
+latency and can exhaust the remote conversation substantially earlier than the local budget implies.
+
+Recommended direction, not yet implemented:
+
+1. Treat the local SQLite conversation and run state as the source of truth.
+2. Hydrate a fresh remote Gemini chat once with the bounded snapshot.
+3. While the requested message list extends the acknowledged snapshot exactly, send only the new
+   suffix (new user turn or tool observation) and track a content-free prefix hash/turn counter.
+4. On reconnect, navigation, local **Phiên mới**, prefix mismatch, or a conservative remote byte/
+   turn threshold, rotate to a fresh Gemini chat and rehydrate the newest bounded local context.
+5. Later add summary compaction for older local history; do not depend on undocumented Gemini
+   context limits or silently drop current-run tool observations.
+
+A simpler stateless alternative is a fresh Gemini chat for every Brain call. It is easier to reason
+about and prevents remote duplication, but it adds navigation latency and creates many remote chat
+entries. The snapshot-once/delta/rotation design is preferred if it can be covered by deterministic
+offline state-machine tests before another live probe.

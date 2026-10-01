@@ -6,6 +6,8 @@ let latestRun: Record<string, unknown> | null;
 let pendingApproval: Record<string, unknown> | null;
 let brainConnected: boolean;
 let workspaceRequestPending: boolean;
+let brainRequestPending: boolean;
+let conversationId: string;
 
 class FakeEventSource {
   onopen: (() => void) | null = null;
@@ -23,6 +25,8 @@ describe('App', () => {
     pendingApproval = null;
     brainConnected = false;
     workspaceRequestPending = false;
+    brainRequestPending = false;
+    conversationId = 'conversation-1';
     window.location.hash = '#bootstrap=test-token';
     vi.stubGlobal('EventSource', FakeEventSource);
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
@@ -30,8 +34,19 @@ describe('App', () => {
       if (url.endsWith('/api/workspace/pick') && workspaceRequestPending) {
         return new Promise<Response>(() => {});
       }
+      if (url.endsWith('/api/brain/connect') && brainRequestPending) {
+        return new Promise<Response>(() => {});
+      }
       const payload = url.endsWith('/api/session/bootstrap')
         ? { csrfToken: 'csrf-test' }
+        : url.endsWith('/api/conversation/new')
+          ? {
+              id: conversationId = 'conversation-2',
+              title: 'Main conversation',
+              createdAt: '2026-09-30T00:00:00Z',
+              updatedAt: '2026-09-30T00:00:00Z',
+              messages: [],
+            }
         : url.endsWith('/api/state')
           ? {
               brain: {
@@ -54,7 +69,7 @@ describe('App', () => {
             }
           : url.endsWith('/api/conversation')
             ? {
-                id: 'conversation-1',
+                id: conversationId,
                 title: 'Main conversation',
                 createdAt: '2026-09-29T00:00:00Z',
                 updatedAt: '2026-09-29T00:00:00Z',
@@ -121,6 +136,17 @@ describe('App', () => {
     expect(screen.getByRole('button', { name: 'Gửi tin nhắn' })).toBeEnabled();
   });
 
+  it('shows Connecting instead of stale Disconnected during a slow Brain connection', async () => {
+    brainRequestPending = true;
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Kết nối' }));
+
+    expect(await screen.findByText('fake · Connecting')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Đang kết nối…' })).toBeDisabled();
+    expect(screen.getByRole('status')).toHaveTextContent('Đang kết nối tới Gemini');
+  });
+
   it('renders the exact pending diff with approve and reject actions', async () => {
     pendingApproval = {
       id: 'approval-1',
@@ -140,5 +166,20 @@ describe('App', () => {
     expect(await screen.findByLabelText('Thay đổi đang chờ duyệt')).toHaveTextContent('-old');
     expect(screen.getByRole('button', { name: 'Áp dụng diff này' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Từ chối' })).toBeInTheDocument();
+  });
+
+  it('starts a new session with an empty context boundary', async () => {
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Phiên mới' }));
+
+    expect(await screen.findByText(
+      'Đã bắt đầu phiên mới; lịch sử cũ không được gửi vào context',
+    )).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/conversation/new',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(screen.getByText('Conversation đang trống')).toBeInTheDocument();
   });
 });

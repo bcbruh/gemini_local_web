@@ -158,6 +158,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: .5; }
 }
 .chat-header h1 { margin: 0; font-size: .98rem; font-weight: 600; }
 .chat-header small { display: block; margin-top: .15rem; color: #888; font-size: .7rem; }
+.chat-header-actions { display: flex; align-items: center; gap: .75rem; }
 .connection-dot { width: .55rem; height: .55rem; border-radius: 50%; background: #bbb; }
 .connection-dot.is-connected { background: #35a36f; box-shadow: 0 0 0 3px #e0f3e9; }
 

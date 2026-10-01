@@ -18,6 +18,32 @@ internal sealed class ConversationService(
         CancellationToken cancellationToken = default) =>
         store.GetActiveConversationAsync(cancellationToken);
 
+    public async Task<PersistedConversation> StartNewAsync(
+        CancellationToken cancellationToken = default)
+    {
+        if (runEngine.ActiveRunId is not null)
+        {
+            throw new InvalidOperationException("Cannot start a new session while a run is active.");
+        }
+
+        await _turnLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (runEngine.ActiveRunId is not null)
+            {
+                throw new InvalidOperationException("Cannot start a new session while a run is active.");
+            }
+
+            await store.StartNewActiveConversationAsync(cancellationToken).ConfigureAwait(false);
+            return await store.GetActiveConversationAsync(cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("The new conversation is unavailable.");
+        }
+        finally
+        {
+            _turnLock.Release();
+        }
+    }
+
     public async Task<PersistedConversation> SendAsync(
         string content,
         CancellationToken cancellationToken = default)

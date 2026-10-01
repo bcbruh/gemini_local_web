@@ -11,6 +11,7 @@ export function App() {
   const [brainBusy, setBrainBusy] = useState(false);
   const [workspaceBusy, setWorkspaceBusy] = useState(false);
   const [messageBusy, setMessageBusy] = useState(false);
+  const [newSessionBusy, setNewSessionBusy] = useState(false);
   const [notice, setNotice] = useState('Đang tạo phiên local an toàn…');
   const eventSource = useRef<EventSource | null>(null);
   const messagesElement = useRef<HTMLDivElement | null>(null);
@@ -62,11 +63,21 @@ export function App() {
 
   const connectBrain = async () => {
     setBrainBusy(true);
+    setState(current => current ? {
+      ...current,
+      brain: { ...current.brain, state: 'Connecting', isConnected: false },
+    } : current);
+    setNotice('Đang kết nối tới Gemini…');
     try {
       const result = await api.connectBrain();
       setState(current => current ? { ...current, brain: result.brain } : current);
       setNotice(`${result.brain.provider} đã kết nối`);
     } catch (error) {
+      try {
+        setState(await api.getState());
+      } catch {
+        // Keep the original connection error as the actionable notice.
+      }
       setNotice(toMessage(error));
     } finally {
       setBrainBusy(false);
@@ -105,6 +116,20 @@ export function App() {
       setNotice(toMessage(error));
     } finally {
       setMessageBusy(false);
+    }
+  };
+
+  const startNewSession = async () => {
+    setNewSessionBusy(true);
+    try {
+      setConversation(await api.startNewConversation());
+      setState(await api.getState());
+      setEvents([]);
+      setNotice('Đã bắt đầu phiên mới; lịch sử cũ không được gửi vào context');
+    } catch (error) {
+      setNotice(toMessage(error));
+    } finally {
+      setNewSessionBusy(false);
     }
   };
 
@@ -247,10 +272,20 @@ export function App() {
             <h1>{conversation?.title ?? 'Main conversation'}</h1>
             <small>{conversation?.messages.length ?? 0} tin nhắn</small>
           </div>
-          <span
-            className={`connection-dot ${state?.brain.isConnected ? 'is-connected' : ''}`}
-            title={state?.brain.isConnected ? 'Brain đã kết nối' : 'Brain chưa kết nối'}
-          />
+          <div className="chat-header-actions">
+            <button
+              className="text-button"
+              type="button"
+              disabled={!conversation || Boolean(activeRun) || messageBusy || newSessionBusy}
+              onClick={() => void startNewSession()}
+            >
+              {newSessionBusy ? 'Đang tạo…' : 'Phiên mới'}
+            </button>
+            <span
+              className={`connection-dot ${state?.brain.isConnected ? 'is-connected' : ''}`}
+              title={state?.brain.isConnected ? 'Brain đã kết nối' : 'Brain chưa kết nối'}
+            />
+          </div>
         </header>
 
         {state?.pendingApproval && (

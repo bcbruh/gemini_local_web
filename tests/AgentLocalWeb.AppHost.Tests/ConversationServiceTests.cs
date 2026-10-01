@@ -63,6 +63,43 @@ public sealed class ConversationServiceTests
         Assert.Empty(conversation.Messages);
     }
 
+    [Fact]
+    public async Task NewSessionExcludesPreviousConversationFromBrainContext()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var store = new SqliteAppStore(directory.File("state.db"));
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await store.InitializeAsync(cancellationToken);
+        await using var brain = new FakeBrain([
+            Final("first answer"),
+            Final("second answer")
+        ]);
+        await brain.ConnectAsync(
+            new BrainConnectionRequest(Interactive: false),
+            cancellationToken);
+        using var engine = new AgentRunEngine(
+            brain,
+            new NoTools(),
+            eventSink: new SqliteAgentRunEventSink(store));
+        using var service = new ConversationService(store, brain, engine);
+        await service.InitializeAsync(cancellationToken);
+
+        var first = await service.SendAsync("first question", cancellationToken);
+        var second = await service.StartNewAsync(cancellationToken);
+        var completedSecond = await service.SendAsync("second question", cancellationToken);
+
+        Assert.NotEqual(first.Id, second.Id);
+        Assert.Empty(second.Messages);
+        Assert.Equal(["second question", "second answer"],
+            completedSecond.Messages.Select(message => message.Content));
+        Assert.Equal(2, brain.ReceivedRequests.Count);
+        var secondRequest = brain.ReceivedRequests.ElementAt(1);
+        Assert.DoesNotContain(
+            secondRequest.Messages,
+            message => message.Content.Contains("first question", StringComparison.Ordinal) ||
+                       message.Content.Contains("first answer", StringComparison.Ordinal));
+    }
+
     private static BrainResponse.Final Final(string message) => new(
         "response-1",
         JsonSerializer.Serialize(new

@@ -48,7 +48,10 @@ public sealed class AgentRunEngineTests
     {
         await using var brain = new FakeBrain(
             [new BrainResponse.Final("bad", "plain prose"), Final("corrected")]);
-        using var engine = new AgentRunEngine(brain, new RecordingTools());
+        using var engine = new AgentRunEngine(
+            brain,
+            new RecordingTools(),
+            new AgentRunOptions(MaximumProtocolRetries: 1));
         var cancellationToken = TestContext.Current.CancellationToken;
         await brain.ConnectAsync(new BrainConnectionRequest(false), cancellationToken);
 
@@ -62,6 +65,60 @@ public sealed class AgentRunEngineTests
         Assert.Contains(
             brain.ReceivedRequests.Last().Messages,
             message => message.Content.Contains("Protocol response rejected", StringComparison.Ordinal));
+        var correction = Assert.Single(
+            brain.ReceivedRequests.Last().Messages,
+            message => message.Content.Contains("Protocol response rejected", StringComparison.Ordinal));
+        Assert.Contains("\"type\":\"final\"", correction.Content, StringComparison.Ordinal);
+        Assert.Contains("\"message\":", correction.Content, StringComparison.Ordinal);
+        Assert.Contains("\"type\":\"tool_request\"", correction.Content, StringComparison.Ordinal);
+        Assert.Contains("fields \"content\"", correction.Content, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InvalidProtocolDoesNotSendAnotherPromptByDefault()
+    {
+        await using var brain = new FakeBrain(
+            [new BrainResponse.Final("bad", "{} {}"), Final("must not be requested")]);
+        using var engine = new AgentRunEngine(brain, new RecordingTools());
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await brain.ConnectAsync(new BrainConnectionRequest(false), cancellationToken);
+
+        var result = await engine.RunAsync(
+            new AgentRunRequest("conversation-1", "question"),
+            cancellationToken);
+
+        Assert.Equal(RunState.Failed, result.State);
+        Assert.Equal(AgentRunErrorCode.InvalidProtocol, result.Error?.Code);
+        Assert.Single(brain.ReceivedRequests);
+    }
+
+    [Fact]
+    public async Task InitialPromptDefinesExactProtocolSchemasAndRejectsObservedAliases()
+    {
+        await using var brain = new FakeBrain([Final("done")]);
+        using var engine = new AgentRunEngine(brain, new RecordingTools());
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await brain.ConnectAsync(new BrainConnectionRequest(false), cancellationToken);
+
+        var result = await engine.RunAsync(
+            new AgentRunRequest("conversation-1", "question"),
+            cancellationToken);
+
+        Assert.Equal(RunState.Completed, result.State);
+        var system = Assert.Single(
+            Assert.Single(brain.ReceivedRequests).Messages,
+            message => message.Role == BrainRole.System);
+        Assert.Contains(
+            "{\"protocol\":\"local-agent/v1\",\"type\":\"final\",\"message\":",
+            system.Content,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "{\"protocol\":\"local-agent/v1\",\"type\":\"tool_request\",\"request_id\":",
+            system.Content,
+            StringComparison.Ordinal);
+        Assert.Contains("Never use type \"message\" or \"response\"", system.Content, StringComparison.Ordinal);
+        Assert.Contains("Never replace it with \"content\"", system.Content, StringComparison.Ordinal);
+        Assert.Contains("Emit one JSON object only", system.Content, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -8,6 +8,12 @@ internal sealed class CdpClient : IAsyncDisposable
     private readonly ClientWebSocket _socket = new();
     private int _nextId;
 
+    internal string? LastCommand { get; private set; }
+
+    internal int? LastErrorCode { get; private set; }
+
+    internal bool LastEvaluationException { get; private set; }
+
     public async Task ConnectAsync(Uri socketUri, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(socketUri);
@@ -40,6 +46,9 @@ internal sealed class CdpClient : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(method);
+        LastCommand = method;
+        LastErrorCode = null;
+        LastEvaluationException = false;
         var id = Interlocked.Increment(ref _nextId);
         var payload = JsonSerializer.SerializeToUtf8Bytes(new
         {
@@ -70,6 +79,7 @@ internal sealed class CdpClient : IAsyncDisposable
                     var code = error.TryGetProperty("code", out var codeElement)
                         ? codeElement.GetInt32()
                         : 0;
+                    LastErrorCode = code;
                     throw new GeminiWebSessionException(
                         GeminiWebFailureKind.Compatibility,
                         $"Chrome rejected the required DevTools command '{method}' (code {code}).");
@@ -82,6 +92,7 @@ internal sealed class CdpClient : IAsyncDisposable
                         $"Chrome returned an invalid result for '{method}'.");
                 }
 
+                LastEvaluationException = result.TryGetProperty("exceptionDetails", out _);
                 return result.Clone();
             }
         }

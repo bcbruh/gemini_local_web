@@ -28,10 +28,20 @@ internal sealed class ChromeGeminiWebSession : IGeminiWebSession
 
         if (_pageClient is not null)
         {
-            var existingStatus = await GetStatusAsync(cancellationToken).ConfigureAwait(false);
-            if (existingStatus == GeminiWebSessionStatus.Connected || interactive)
+            try
             {
-                return existingStatus;
+                var existingStatus = await GetStatusAsync(cancellationToken).ConfigureAwait(false);
+                if (existingStatus == GeminiWebSessionStatus.Connected || interactive)
+                {
+                    return existingStatus;
+                }
+            }
+            catch (GeminiWebSessionException)
+            {
+                // A closed/reloaded isolated tab can invalidate the prior CDP transport.
+                // Connect is the recovery boundary: discard only the transport and then
+                // rediscover or relaunch the application-owned browser below.
+                await ResetTransportAsync().ConfigureAwait(false);
             }
         }
 

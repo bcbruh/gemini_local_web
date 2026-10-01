@@ -123,6 +123,31 @@ public sealed class SqliteAppStoreTests
     }
 
     [Fact]
+    public async Task StartingNewConversationChangesActiveSessionWithoutDeletingOldHistory()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var store = new SqliteAppStore(directory.File("state.db"));
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await store.InitializeAsync(cancellationToken);
+        var firstId = await store.GetOrCreateActiveConversationAsync(cancellationToken);
+        await store.AppendConversationMessageAsync(
+            firstId,
+            "user",
+            "old session content",
+            cancellationToken);
+
+        var secondId = await store.StartNewActiveConversationAsync(cancellationToken);
+        var active = await store.GetActiveConversationAsync(cancellationToken);
+        var events = await store.ReadEventsAfterAsync(0, cancellationToken: cancellationToken);
+
+        Assert.NotEqual(firstId, secondId);
+        Assert.NotNull(active);
+        Assert.Equal(secondId, active.Id);
+        Assert.Empty(active.Messages);
+        Assert.Equal(2, events.Count(appEvent => appEvent.Type == "conversation.created"));
+    }
+
+    [Fact]
     public async Task ConversationMessageRejectsUnsupportedRoleAndOversizedContent()
     {
         using var directory = new TemporaryDirectory();
